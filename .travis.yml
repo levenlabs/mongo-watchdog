@@ -1,0 +1,54 @@
+sudo: required
+dist: xenial
+language: go
+go:
+  - "1.x"
+before_install:
+  # install the mongodb repo and then install any tools we need to build the filesystem and thrift driver
+  - sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 2930ADAE8CAF5059EE73BB4B58712A2291FA4AD5
+  - echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/3.6 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-3.6.list
+  - sudo apt-get update
+  - sudo apt-get install -qq g++ cmake fuse python libfuse-dev git mongodb-org libboost-dev libboost-test-dev libboost-program-options-dev libboost-filesystem-dev libboost-thread-dev libevent-dev automake libtool flex bison pkg-config libssl-dev
+  # attempt to kill mongod if it was started automatically
+  - sudo pkill mongod || true
+  # we have to compile thrift since we can't install a correct version for charybdefs
+  - cd /tmp && wget http://apache.mirrors.hoobly.com/thrift/0.9.3/thrift-0.9.3.tar.gz && tar -xvf /tmp/thrift-0.9.3.tar.gz
+  - cd thrift-0.9.3 && ./configure --without-java --without-ruby --without-php --without-nodejs --without-perl --without-go --without-csharp --without-erlang && make && sudo make install
+  # now compile charybdefs using fork from https://jira.mongodb.org/browse/SERVER-29948
+  - git clone https://github.com/markbenvenuto/charybdefs.git /tmp/charybdefs
+  - cd /tmp/charybdefs && thrift -r --gen cpp server.thrift && cmake CMakeLists.txt && make
+  # add the fuse driver which charybdefs needs
+  - sudo modprobe fuse
+  - sudo mkdir /root/charybdefs && sudo mkdir /data && sudo chmod 777 /data
+  # ensure we can write to the log directory
+  - sudo mkdir -p /var/log/ && sudo chmod 777 /var/log/
+  # make the data directories for the first mongo
+  - mkdir /data/1 && chmod 777 /data/1 && mkdir /data/1/journal
+  # mount charybdefs as the journal path for first mongo
+  # we can't use the root data directory since mongo complains about the fuse filesystem
+  - mkdir /data/1-journal && sudo ./charybdefs /data/1/journal -omodules=subdir,subdir=/data/1-journal -oallow_other
+  - mongod --port 27017 --fork --replSet test --dbpath /data/1 --logpath /var/log/mongo1.log || (cat /var/log/mongo1.log && false)
+  # make the data and log directories for the second mongo
+  - mkdir /data/2 && chmod 777 /data/2 && sudo mkdir -p /var/log/mongo2 && sudo chmod 777 /var/log/mongo2
+  - mongod --port 27018 --fork --replSet test --dbpath /data/2 --logpath /var/log/mongo2.log || (cat /var/log/mongo2.log && false)
+  # make the data and log directories for the third mongo
+  - mkdir /data/3 && chmod 777 /data/3 && sudo mkdir -p /var/log/mongo3 && sudo chmod 777 /var/log/mongo3
+  - mongod --port 27019 --fork --replSet test --dbpath /data/3 --logpath /var/log/mongo3.log || (cat /var/log/mongo3.log && false)
+  # initialize the cluster with a primary, being the first mongo instance, and 2 secondaries
+  - "mongo --eval 'rs.initiate({_id: \"test\", members: [{_id: 0, host: \"127.0.0.1:27017\", priority: 2}, {_id: 1, host: \"127.0.0.1:27018\"}, {_id: 2, host: \"127.0.0.1:27019\"}]})'"
+  # let the replica set establish itself
+  - sleep 5
+  # for debugging, it would be helpful to know what the state looks like
+  - "mongo --eval 'rs.status()' || (cat /var/log/mongo1.log && false)"
+  # tell the filesystem to start blocking
+  # specifying our own PYTHONPATH here so we get site-packages and it doesn't try to use dist-packages
+  # for some reason running make install in thrift installs to site-packages and not dist-packages
+  - cd $GOPATH/src/github.com/levenlabs/mongo-watchdog/test && thrift -r --gen py /tmp/charybdefs/server.thrift && PYTHONPATH=/usr/lib/python2.7/site-packages:$PYTHONPATH python charybdefs.py
+  # finally change back into the main directory for the go get step
+  - cd $GOPATH/src/github.com/levenlabs/mongo-watchdog
+install:
+  - go get -t -v ./...
+script:
+  - go test -race -v -bench=. ./...
+notifications:
+  email: false
