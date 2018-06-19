@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 	llog "github.com/levenlabs/go-llog"
-	"gopkg.in/mgo.v2/bson"
 )
 
 type replInfo struct {
@@ -47,11 +47,16 @@ func main() {
 }
 
 func connect(addr string, timeout time.Duration) (*mgo.Session, error) {
-	sess, err := mgo.DialWithTimeout(addr, timeout)
+	sess, err := mgo.DialWithTimeout("mongodb://"+addr+"/local?connect=direct", timeout)
 	if err != nil {
 		return nil, err
 	}
 	sess.SetSocketTimeout(timeout)
+	sess.SetSafe(&mgo.Safe{
+		J:        true,
+		WTimeout: int(timeout.Nanoseconds() / 1e6),
+	})
+	sess.SetMode(mgo.Eventual, false)
 	return sess, nil
 }
 
@@ -96,6 +101,7 @@ func spin(sess *mgo.Session, updateInterval, failureThreshold time.Duration) {
 
 		// if we're over the threshold, kill the process
 		if time.Now().Sub(firstFailure) >= failureThreshold {
+			llog.Info("killing mongod instance", llog.KV{"pid": status.PID})
 			proc, err := os.FindProcess(status.PID)
 			if err == nil {
 				err = proc.Kill()

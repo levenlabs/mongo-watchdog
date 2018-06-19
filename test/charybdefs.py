@@ -20,4 +20,8 @@ def connect():
 
 def main():
   client = connect()
-  client.set_fault(['write'], False, 0, 0, "", False, 50000000, False)
+  client.clear_all_faults()
+  client.set_all_fault(False, 0, 0, "", False, 50000000, False)
+
+if __name__ == "__main__":
+    main()

@@ -4,9 +4,15 @@ import (
 	. "testing"
 	"time"
 
+	"github.com/levenlabs/go-llog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func init() {
+	// make sure that there are timestamps for these tests for debugging purposes
+	llog.DisplayTimestamp = true
+}
 
 // this test assumes that you have 3 local instances of mongo running in a
 // replica set where the first one is the primary and can't write to the local
@@ -21,20 +27,23 @@ func TestSpin(t *T) {
 
 	// make sure that all work and that 1 is the primary
 	// ignore the error from the first one since it can't write
-	status, _ := upsert(sess1)
+	status, err := upsert(sess1)
+	require.Error(t, err)
 	require.True(t, status.Repl.IsMaster)
 
-	_, err = upsert(sess2)
+	status, err = upsert(sess2)
 	require.NoError(t, err)
+	require.False(t, status.Repl.IsMaster)
 
-	_, err = upsert(sess3)
-	require.NoError(t, err)
+	status, err = upsert(sess3)
+	require.False(t, status.Repl.IsMaster)
 
 	// start up the spinner
 	go spin(sess1, time.Second, 15*time.Second)
 
+	// loop for a minute to see if it switches to another primary
 	var switched bool
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 20; i++ {
 		status, err := upsert(sess2)
 		if err == nil && status.Repl.IsMaster {
 			switched = true
