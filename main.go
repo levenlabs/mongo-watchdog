@@ -24,6 +24,7 @@ func main() {
 	st := flag.String("socket-timeout", "30s", "duration of the socket timeout")
 	ui := flag.String("update-interval", "15s", "how often to try and update the local db")
 	ft := flag.String("failure-threshold", "2m", "how long since the last successful update should we try to kill mongod")
+	ll := flag.String("log-level", "info", "the llog log level (error, warn, info, debug)")
 	addr := flag.String("addr", "127.0.0.1:27017", "local mongo address, must be on the same server")
 	flag.Parse()
 
@@ -38,6 +39,9 @@ func main() {
 	failureThreshold, err := time.ParseDuration(*ft)
 	if err != nil {
 		llog.Fatal("failed to parse --failure-threshold", llog.ErrKV(err))
+	}
+	if err := llog.SetLevelFromString(*ll); err != nil {
+		llog.Fatal("failed to set --log-level", llog.ErrKV(err))
 	}
 	sess, err := connect(*addr, socketTimeout)
 	if err != nil {
@@ -66,6 +70,7 @@ func upsert(sess *mgo.Session) (serverStatus, error) {
 		return status, err
 	}
 	if !status.Repl.IsMaster {
+		llog.Debug("ignoring non-primary instance")
 		return status, nil
 	}
 	// no need for this to be replicated so use the local database
@@ -74,6 +79,9 @@ func upsert(sess *mgo.Session) (serverStatus, error) {
 	}, bson.M{
 		"lastUpdate": time.Now(),
 	})
+	if err == nil {
+		llog.Debug("upserted into local watchdog collection")
+	}
 	return status, err
 }
 
